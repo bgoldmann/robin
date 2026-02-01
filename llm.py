@@ -155,10 +155,15 @@ def _generate_final_string(results, truncate=False):
         max_link_length = 0
 
     final_str = []
+    max_link_display = 60  # For non-onion links (e.g. t.me, telegram://)
     for i, res in enumerate(results):
-        # Truncate link at .onion for display
-        truncated_link = re.sub(r"(?<=\.onion).*", "", res["link"])
-        title = re.sub(r"[^0-9a-zA-Z\-\.]", " ", res["title"])
+        link = res.get("link", "")
+        # Truncate link: at .onion for onion URLs, else by length for t.me/telegram etc.
+        if ".onion" in link:
+            truncated_link = re.sub(r"(?<=\.onion).*", "", link)
+        else:
+            truncated_link = link[:max_link_display] + "..." if len(link) > max_link_display else link
+        title = re.sub(r"[^0-9a-zA-Z\-\.]", " ", res.get("title", ""))
         if truncated_link == "" and title == "":
             continue
 

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Telegram OSINT** - Optional Telegram source alongside dark web search:
+  - Public post search via Telethon (`SearchPostsRequest`) and optional global search in joined chats (`SearchGlobalRequest`)
+  - CLI flag `--telegram` to include Telegram results; Web UI checkbox "Include Telegram search"
+  - Config: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_PATH`, `TELEGRAM_ENABLED` (see `.env.example`)
+  - First-time login via session file (phone + code); results merged with dark web and passed through existing filter/scrape/summary pipeline
+  - Scrape layer supports pre-filled `content` so Telegram items skip HTTP; filter/summary handle t.me and telegram:// links
 - **Comprehensive logging system** - Structured logging with configurable levels and file output
 - **Input validation** - Query validation and sanitization to prevent security issues
 - **Retry mechanisms** - Exponential backoff retry decorators for resilient operations

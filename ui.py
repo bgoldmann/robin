@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set
 from scrape import scrape_multiple
 from search import get_search_results
+from telegram_osint import get_telegram_results, is_telegram_configured
 from llm_utils import BufferedStreamingHandler
 from llm import get_llm, refine_query, filter_results, generate_summary
 from utils import (
@@ -178,6 +179,9 @@ with st.sidebar.expander("⚙️ Settings", expanded=True):
     )
     threads = st.slider("Scraping Threads", 1, 16, 4, key="thread_slider")
     extract_iocs_flag = st.checkbox("Extract IOCs", value=False, key="extract_iocs")
+    include_telegram = st.checkbox("Include Telegram search", value=False, key="include_telegram")
+    if include_telegram and not is_telegram_configured():
+        st.caption("Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_ENABLED=true to enable.")
     export_format = st.selectbox(
         "Export Format",
         ["Markdown", "JSON", "CSV", "All"],
@@ -332,24 +336,41 @@ if (run_button and query) or query_to_process:
         with cols[0]:
             st.metric("Refined Query", st.session_state.refined[:30] + "..." if len(st.session_state.refined) > 30 else st.session_state.refined)
         
-        # Stage 3 - Search dark web (40%)
+        # Stage 3 - Search dark web (+ optional Telegram) (40%)
+        telegram_count = 0
         with status_container:
-            with st.status("🔍 Searching dark web...", expanded=False) as status:
-                update_progress(progress_bar, progress_text, 0.4, "Searching Dark Web")
+            with st.status("🔍 Searching dark web..." + (" + Telegram" if include_telegram else ""), expanded=False) as status:
+                update_progress(progress_bar, progress_text, 0.4, "Searching Dark Web" + (" + Telegram" if include_telegram else ""))
                 try:
                     st.session_state.results = get_search_results(
                         st.session_state.refined.replace(" ", "+"), 
                         max_workers=threads
                     )
+                    if include_telegram and is_telegram_configured():
+                        tg_results = get_telegram_results(st.session_state.refined, limit=50)
+                        if tg_results:
+                            seen_links = {r.get("link") for r in st.session_state.results if r.get("link")}
+                            for r in tg_results:
+                                link = r.get("link")
+                                if link and link not in seen_links:
+                                    seen_links.add(link)
+                                    st.session_state.results.append(r)
+                                    telegram_count += 1
+                            status.update(label=f"✅ Found {len(st.session_state.results)} results (Telegram: {telegram_count})", state="complete")
+                        else:
+                            status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
+                    else:
+                        status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
                     if not st.session_state.results:
                         st.warning("⚠️ No results found. Try refining your query.")
-                    status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
                 except Exception as e:
                     status.update(label=f"❌ Search failed: {str(e)}", state="error")
                     raise
         
         with cols[1]:
             st.metric("Search Results", len(st.session_state.results))
+            if include_telegram and telegram_count:
+                st.caption(f"Telegram: {telegram_count}")
         
         # Stage 4 - Filter results (60%)
         if st.session_state.results:

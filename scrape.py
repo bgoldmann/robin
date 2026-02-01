@@ -95,6 +95,12 @@ def scrape_single(
     if not url:
         logger.warning("No URL provided in url_data")
         return url, title
+
+    # Pre-filled content (e.g. Telegram OSINT): skip HTTP, return as-is (truncation in scrape_multiple)
+    if url_data.get('content'):
+        content = url_data['content']
+        logger.debug(f"Using pre-filled content for {url[:50]}... ({len(content)} chars)")
+        return url, content
     
     use_tor = ".onion" in url
     

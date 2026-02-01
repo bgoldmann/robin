@@ -23,3 +23,9 @@ TOR_INSTANCE_START_PORT = int(os.getenv("TOR_INSTANCE_START_PORT", "9050"))  # S
 # Timeout Configuration
 SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "20"))  # Timeout for search requests (seconds)
 SCRAPE_TIMEOUT = int(os.getenv("SCRAPE_TIMEOUT", "45"))  # Timeout for scraping requests (seconds)
+
+# Telegram OSINT (optional)
+TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
+TELEGRAM_SESSION_PATH = os.getenv("TELEGRAM_SESSION_PATH", "robin_telegram.session")
+TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"

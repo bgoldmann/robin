@@ -322,6 +322,7 @@ robin cli -m gpt4o \
 | `--output` | `-o` | Output filename (without extension) | Auto-generated |
 | `--format` | `-f` | Output format (markdown, json, both) | `markdown` |
 | `--extract-iocs` | - | Extract and export Indicators of Compromise | `false` |
+| `--telegram` | - | Include Telegram OSINT search (public posts and joined chats) | `false` |
 | `--log-level` | - | Logging level (DEBUG, INFO, WARNING, ERROR) | `INFO` |
 | `--log-file` | - | Optional log file path | None |
 
@@ -339,6 +340,9 @@ robin cli -m llama3.1 -q "zero days" -t 8
 
 # With detailed logging
 robin cli -m gemini-2.5-flash -q "threat actor profiles" --log-level DEBUG --log-file debug.log
+
+# With Telegram OSINT (requires TELEGRAM_* env vars)
+robin cli -m gpt4o -q "ransomware" --telegram --extract-iocs
 ```
 
 ### Web UI Mode
@@ -359,6 +363,7 @@ robin ui --ui-port 8080 --ui-host 0.0.0.0
    - LLM model selection
    - Thread count configuration
    - IOC extraction toggle
+   - Include Telegram search (when configured)
    - Export format selection
 
 2. **Advanced Settings** (Expandable)
@@ -446,6 +451,22 @@ SEARCH_TIMEOUT=20                  # Search request timeout (seconds)
 SCRAPE_TIMEOUT=45                  # Scraping timeout (seconds)
 ```
 
+#### Telegram OSINT (Optional)
+
+To include Telegram in investigations (public posts and joined chats), obtain API credentials from [my.telegram.org](https://my.telegram.org/) and set:
+
+```env
+TELEGRAM_API_ID=your_api_id        # Integer from my.telegram.org
+TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_SESSION_PATH=robin_telegram.session   # Optional; default robin_telegram.session
+TELEGRAM_ENABLED=true
+```
+
+- **First-time login**: The first time you use Telegram OSINT, you must authorize the app (phone number + code). Run a query with `--telegram` (CLI) or enable "Include Telegram search" (UI); if the session is not yet authorized, follow the instructions to complete login. Session data is stored in `TELEGRAM_SESSION_PATH` so you do not need to log in again.
+- **CLI**: Use the `--telegram` flag to merge Telegram results with dark web results.
+- **Web UI**: Enable the "Include Telegram search" checkbox in Settings.
+- **Legal / ToS**: Use only for lawful OSINT (e.g. threat intelligence, authorized investigations). Comply with Telegram's Terms of Service and applicable laws. Only public channel posts and (optionally) search within your own joined chats are used; no access to private chats.
+
 ### Streamlit Configuration
 
 Edit `.streamlit/config.toml` for UI customization:
@@ -528,7 +549,8 @@ font = "sans serif"
 - **`llm.py`**: LLM operations (refinement, filtering, summarization)
 - **`llm_utils.py`**: LLM configuration and model management
 - **`search.py`**: Dark web search engine integration
-- **`scrape.py`**: Content scraping with Tor support
+- **`telegram_osint.py`**: Telegram OSINT (public posts and joined-chat search via Telethon)
+- **`scrape.py`**: Content scraping with Tor support (and pre-filled content for Telegram)
 - **`tor_controller.py`**: Tor circuit rotation and management
 - **`tor_pool.py`**: Multiple Tor instance management
 - **`utils.py`**: Utilities (logging, validation, IOC extraction, retry mechanisms)

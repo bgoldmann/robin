@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 from scrape import scrape_multiple
 from search import get_search_results
+from telegram_osint import get_telegram_results
 from llm import get_llm, refine_query, filter_results, generate_summary
 from utils import (
     logger,
@@ -76,7 +77,13 @@ def robin():
     default=None,
     help="Optional log file path",
 )
-def cli(model, query, threads, output, format, extract_iocs, log_level, log_file):
+@click.option(
+    "--telegram",
+    is_flag=True,
+    default=False,
+    help="Include Telegram OSINT search (public posts and joined chats). Requires TELEGRAM_* env vars.",
+)
+def cli(model, query, threads, output, format, extract_iocs, log_level, log_file, telegram):
     """Run Robin in CLI mode.\n
     Example commands:\n
     - robin -m gpt4o -q "ransomware payments" -t 12\n
@@ -113,6 +120,16 @@ def cli(model, query, threads, output, format, extract_iocs, log_level, log_file
             search_results = get_search_results(
                 refined_query.replace(" ", "+"), max_workers=threads
             )
+            if telegram:
+                tg_results = get_telegram_results(refined_query, limit=50)
+                seen_links = {r.get("link") for r in search_results if r.get("link")}
+                for r in tg_results:
+                    link = r.get("link")
+                    if link and link not in seen_links:
+                        seen_links.add(link)
+                        search_results.append(r)
+                if tg_results:
+                    logger.info(f"Added {len(tg_results)} Telegram results; total {len(search_results)}")
         except Exception as e:
             logger.error(f"Error getting search results: {e}")
             click.echo(f"[ERROR] Failed to get search results: {e}", err=True)
