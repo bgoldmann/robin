@@ -29,3 +29,19 @@ TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 TELEGRAM_SESSION_PATH = os.getenv("TELEGRAM_SESSION_PATH", "robin_telegram.session")
 TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
+
+# Database (optional - for --save-db)
+ROBIN_DB_PATH = os.getenv("ROBIN_DB_PATH", "")  # Empty = default ~/.robin/robin.db
+
+# Clear-web search (for People Search mode)
+CLEAR_WEB_SEARCH_ENABLED = os.getenv("CLEAR_WEB_SEARCH_ENABLED", "true").lower() == "true"
+DUCKDUCKGO_ENABLED = os.getenv("DUCKDUCKGO_ENABLED", "true").lower() == "true"
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "")  # Optional; requires GOOGLE_API_KEY
+CLEAR_WEB_MAX_RESULTS = int(os.getenv("CLEAR_WEB_MAX_RESULTS", "30"))
+CLEAR_WEB_TIMEOUT = int(os.getenv("CLEAR_WEB_TIMEOUT", "15"))
+
+# People APIs (optional - for People Search enrichment)
+PEOPLE_APIS_ENABLED = os.getenv("PEOPLE_APIS_ENABLED", "false").lower() == "true"
+HUNTER_API_KEY = os.getenv("HUNTER_API_KEY", "")
+EMAILREP_API_KEY = os.getenv("EMAILREP_API_KEY", "")
+HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")

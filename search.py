@@ -1,3 +1,4 @@
+import time
 import requests
 import random, re
 from bs4 import BeautifulSoup
@@ -14,6 +15,12 @@ from requests.exceptions import (
 from utils import logger, create_session_with_retry, retry_with_backoff
 from tor_pool import get_tor_pool
 from config import SEARCH_TIMEOUT
+
+try:
+    from telegram_osint import get_telegram_results, is_telegram_configured
+except ImportError:
+    get_telegram_results = None
+    is_telegram_configured = lambda: False
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -242,9 +249,13 @@ def check_search_engine_health(engine_id: str, engine_config: Dict) -> bool:
         return False
 
 
-def get_enabled_search_engines() -> List[tuple]:
+def get_enabled_search_engines(skip_health_check: bool = False) -> List[tuple]:
     """
     Get list of enabled search engines, sorted by priority and health.
+    
+    Args:
+        skip_health_check: If True, skip health check and return all enabled engines
+            by priority only (faster startup when engines are known good).
     
     Returns:
         List of (engine_id, engine_config) tuples
@@ -257,6 +268,9 @@ def get_enabled_search_engines() -> List[tuple]:
     
     # Sort by priority (lower number = higher priority)
     enabled.sort(key=lambda x: x[1].get("priority", 999))
+    
+    if skip_health_check:
+        return enabled
     
     # Check health and prioritize healthy engines
     healthy = []
@@ -372,16 +386,23 @@ def fetch_search_results(endpoint: str, query: str) -> List[Dict[str, str]]:
             tor_pool.record_failure(port_used)
         return []
 
-def get_search_results(refined_query: str, max_workers: int = 5) -> List[Dict[str, str]]:
+def get_search_results(
+    refined_query: str,
+    max_workers: int = 5,
+    include_telegram: bool = False,
+    skip_health_check: bool = False,
+) -> List[Dict[str, str]]:
     """
-    Get search results from all configured search engines.
+    Get search results from all configured search engines (and optionally Telegram).
+
+    Tor engines and Telegram (when include_telegram and configured) run in the same
+    executor; results are merged and deduplicated by link.
     
     Args:
-        refined_query: Refined search query
-        max_workers: Maximum number of concurrent workers
-        
-    Returns:
-        List of unique search results (deduplicated by link)
+        refined_query: Search query string.
+        max_workers: Number of concurrent workers.
+        include_telegram: Whether to include Telegram OSINT results.
+        skip_health_check: If True, skip engine health check for faster startup.
     """
     logger.info(f"Starting search with query: {refined_query[:100]}...")
     
@@ -389,23 +410,39 @@ def get_search_results(refined_query: str, max_workers: int = 5) -> List[Dict[st
     if not verify_tor_connection():
         logger.warning("Tor connection verification failed, but continuing anyway...")
     
-    # Get enabled engines (sorted by priority and health)
-    enabled_engines = get_enabled_search_engines()
+    # Get enabled engines (sorted by priority and health, unless skip_health_check)
+    enabled_engines = get_enabled_search_engines(skip_health_check=skip_health_check)
     logger.info(f"Using {len(enabled_engines)} enabled search engines")
+    
+    # Build tasks: Tor engines + optional Telegram
+    tasks = [
+        ("tor", engine_id, engine_config)
+        for engine_id, engine_config in enabled_engines
+    ]
+    if include_telegram and get_telegram_results and is_telegram_configured():
+        tasks.append(("telegram", "telegram", None))
     
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(fetch_search_results, engine_config["url"], refined_query): (engine_id, engine_config)
-            for engine_id, engine_config in enabled_engines
-        }
+        future_to_task = {}
+        for kind, engine_id, engine_config in tasks:
+            if kind == "telegram":
+                future_to_task[executor.submit(get_telegram_results, refined_query, 50)] = (
+                    "telegram",
+                    {"name": "Telegram"},
+                )
+            else:
+                future_to_task[
+                    executor.submit(fetch_search_results, engine_config["url"], refined_query)
+                ] = (engine_id, engine_config)
         
-        for future in as_completed(futures):
-            engine_id, engine_config = futures[future]
+        for future in as_completed(future_to_task):
+            engine_id, engine_config = future_to_task[future]
             try:
                 result_urls = future.result()
+                if result_urls is None:
+                    result_urls = []
                 results.extend(result_urls)
-                # Record success
                 if engine_id not in _engine_stats:
                     _engine_stats[engine_id] = {"requests": 0, "successes": 0, "results": 0}
                 _engine_stats[engine_id]["requests"] += 1
@@ -413,7 +450,6 @@ def get_search_results(refined_query: str, max_workers: int = 5) -> List[Dict[st
                 _engine_stats[engine_id]["results"] += len(result_urls)
             except Exception as e:
                 logger.error(f"Error getting results from {engine_config.get('name', engine_id)}: {e}")
-                # Record failure
                 if engine_id not in _engine_stats:
                     _engine_stats[engine_id] = {"requests": 0, "successes": 0, "results": 0}
                 _engine_stats[engine_id]["requests"] += 1
@@ -427,5 +463,5 @@ def get_search_results(refined_query: str, max_workers: int = 5) -> List[Dict[st
             seen_links.add(link)
             unique_results.append(res)
     
-    logger.info(f"Found {len(unique_results)} unique results from {len(enabled_engines)} search engines")
+    logger.info(f"Found {len(unique_results)} unique results from {len(tasks)} source(s)")
     return unique_results

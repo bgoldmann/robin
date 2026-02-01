@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **People Search (OSINT)** - Person-centric deep people search and OSINT:
+  - CLI: `robin people --name "John Doe" --email j@x.com --username johndoe` (at least one of name, email, username, phone required)
+  - API: `POST /investigate/people` with body `{ "name", "email", "username", "phone" }`
+  - Web UI: "People Search" mode with name, email, username, phone fields
+  - Multi-source: dark web + Telegram + clear web (DuckDuckGo, optional Google CSE) + optional people APIs (Hunter, EmailRep, HIBP breach presence)
+  - Person profile (aliases, emails, usernames, phones, social links, dark/clear web mentions, IOCs, API snippets) and people-specific narrative summary
+  - Config: `CLEAR_WEB_SEARCH_ENABLED`, `DUCKDUCKGO_ENABLED`, `GOOGLE_CSE_ID`, `PEOPLE_APIS_ENABLED`, `HUNTER_API_KEY`, `EMAILREP_API_KEY`, `HIBP_API_KEY` (see `.env.example`)
+  - People search must be used only for lawful purposes (e.g. authorized investigations, research). Do not use for stalking or harassment.
+- **API Server Mode** - REST API for programmatic access (`robin api`):
+  - Endpoints: `/health`, `/search`, `/investigate`
+  - API key auth via `X-API-Key` header when `ROBIN_API_KEY` is set
+  - Rate limiting (slowapi)
+  - OpenAPI docs at `/docs`
+- **Batch Processing** - Run multiple queries from file (`robin batch -b queries.txt`)
+  - Sequential processing with aggregated IOCs and combined report
+  - Markdown, JSON, PDF output
+- **PDF Report Generation** - Shareable reports (`--format pdf` or `--format all`)
+  - Pure-Python PDF via reportlab (no system deps like cairo)
+  - Web UI PDF download
+- **Database Integration** - SQLite persistence (`--save-db`)
+  - Tables: investigations, search_results, iocs
+  - Default path: `~/.robin/robin.db` (configurable via `ROBIN_DB_PATH`)
+- **STIX/MISP IOC Export** - Threat intel formats when `--extract-iocs`:
+  - STIX 2.x bundle (JSON)
+  - MISP-compatible Event/Attribute JSON
+- **Circuit Rotation** - Tor circuit rotation during scraping:
+  - CLI: `--rotate-circuit`, `--rotate-interval`
+  - UI: Advanced Settings "Enable Circuit Rotation"
+- **Skip Health Check** - Faster startup (`--skip-health-check` / UI option)
 - **Telegram OSINT** - Optional Telegram source alongside dark web search:
   - Public post search via Telethon (`SearchPostsRequest`) and optional global search in joined chats (`SearchGlobalRequest`)
   - CLI flag `--telegram` to include Telegram results; Web UI checkbox "Include Telegram search"
@@ -35,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Type hints** - Added type hints throughout codebase for better code quality
 
 ### Fixed
+- **Missing time import in search.py** - `check_search_engine_health()` now imports `time`
+- **Advanced Settings not applied** - Tor rotate and interval now passed from UI to scrape layer
 - **Silent failures** - All errors now properly logged and reported
 - **Rate limit handling** - Better handling of LLM API rate limits with fallbacks
 - **Index errors** - Fixed potential index errors in result filtering

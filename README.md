@@ -51,6 +51,22 @@
 - **IOC Extraction**: Automatically extracts Indicators of Compromise (IPs, domains, emails, hashes, crypto addresses, etc.)
 - **Comprehensive Reporting**: Generates detailed investigation summaries with actionable insights
 - **Dual Interface**: Command-line interface for automation and web UI for interactive use
+- **People Search (OSINT)**: Person-centric deep people search across dark web, Telegram, clear web, and optional people APIs (Hunter, EmailRep, HIBP), with unified person profile and narrative summary
+
+---
+
+## People Search (OSINT)
+
+Robin includes a **People Search** mode for person-centric OSINT. You provide one or more identifiers (name, email, username, phone); Robin expands them into search queries, runs dark web + Telegram + clear web search, optionally calls people APIs (Hunter, EmailRep, HIBP), and produces a **person profile** plus an **investigation summary** and IOCs.
+
+- **Inputs**: At least one of name, email, username, phone (comma-separated for multiple emails/usernames).
+- **Sources**: Existing dark web (15+ engines) and optional Telegram; clear web (DuckDuckGo, optional Google Custom Search); optional people APIs (Hunter.io, EmailRep.io, Have I Been Pwned for breach presence only).
+- **Output**: Structured person profile (emails, usernames, phones, social links, dark/clear web mentions, IOCs, API snippets) and a people-focused narrative summary. Same export options (Markdown, JSON, PDF, IOCs).
+- **Legal / ethics**: People search must be used only for lawful purposes (e.g. authorized investigations, research). Do not use for stalking or harassment. Only public or semi-public data is aggregated; HIBP is used only for breach presence with API key and ToS compliance.
+
+**CLI:** `robin people --name "John Doe" --email j@example.com --username johndoe`  
+**API:** `POST /investigate/people` with JSON body `{ "name", "email", "username", "phone" }`  
+**Web UI:** Select "People Search" mode and fill in the person identifier fields.
 
 ---
 
@@ -320,9 +336,13 @@ robin cli -m gpt4o \
 | `--query` | `-q` | Dark web search query (required) | - |
 | `--threads` | `-t` | Number of concurrent threads for scraping | `5` |
 | `--output` | `-o` | Output filename (without extension) | Auto-generated |
-| `--format` | `-f` | Output format (markdown, json, both) | `markdown` |
+| `--format` | `-f` | Output format (markdown, json, both, pdf, all) | `markdown` |
 | `--extract-iocs` | - | Extract and export Indicators of Compromise | `false` |
 | `--telegram` | - | Include Telegram OSINT search (public posts and joined chats) | `false` |
+| `--rotate-circuit` | - | Enable Tor circuit rotation during scraping | `false` |
+| `--rotate-interval` | - | Rotate Tor circuit after N requests | TOR_ROTATE_INTERVAL |
+| `--skip-health-check` | - | Skip search engine health check for faster startup | `false` |
+| `--save-db` | - | Save investigation to SQLite database | `false` |
 | `--log-level` | - | Logging level (DEBUG, INFO, WARNING, ERROR) | `INFO` |
 | `--log-file` | - | Optional log file path | None |
 
@@ -343,7 +363,39 @@ robin cli -m gemini-2.5-flash -q "threat actor profiles" --log-level DEBUG --log
 
 # With Telegram OSINT (requires TELEGRAM_* env vars)
 robin cli -m gpt4o -q "ransomware" --telegram --extract-iocs
+
+# With circuit rotation and PDF output
+robin cli -m gpt4o -q "ransomware" --rotate-circuit --format pdf --extract-iocs
+
+# Save to database
+robin cli -m gpt4o -q "data breach" --extract-iocs --save-db
+
+# People Search (at least one of --name, --email, --username, --phone)
+robin people --name "John Doe" --email j@example.com --username johndoe --extract-iocs --format json
+robin people --email target@example.com --telegram
 ```
+
+#### Batch Mode
+
+Process multiple queries from a file (one query per line):
+
+```bash
+robin batch -b queries.txt -m gpt4o -t 8 --extract-iocs --format all
+```
+
+#### API Server Mode
+
+Run the REST API for programmatic access:
+
+```bash
+# Start API server (default: http://0.0.0.0:8000)
+robin api --port 8000
+
+# With API key (set ROBIN_API_KEY in .env)
+robin api -p 8000
+```
+
+Endpoints: `GET /health`, `POST /search`, `POST /investigate`. Docs at `/docs`.
 
 ### Web UI Mode
 
@@ -466,6 +518,28 @@ TELEGRAM_ENABLED=true
 - **CLI**: Use the `--telegram` flag to merge Telegram results with dark web results.
 - **Web UI**: Enable the "Include Telegram search" checkbox in Settings.
 - **Legal / ToS**: Use only for lawful OSINT (e.g. threat intelligence, authorized investigations). Comply with Telegram's Terms of Service and applicable laws. Only public channel posts and (optionally) search within your own joined chats are used; no access to private chats.
+
+#### Clear-web and People APIs (Optional – People Search mode)
+
+People Search uses clear-web search (DuckDuckGo, optional Google CSE) and optional people APIs for enrichment:
+
+```env
+# Clear-web search (People Search)
+CLEAR_WEB_SEARCH_ENABLED=true
+DUCKDUCKGO_ENABLED=true
+GOOGLE_CSE_ID=                    # Optional; requires GOOGLE_API_KEY
+CLEAR_WEB_MAX_RESULTS=30
+CLEAR_WEB_TIMEOUT=15
+
+# People APIs (Hunter, EmailRep, HIBP)
+PEOPLE_APIS_ENABLED=false
+HUNTER_API_KEY=
+EMAILREP_API_KEY=
+HIBP_API_KEY=                     # Have I Been Pwned – breach presence only
+```
+
+- **People search must be used only for lawful purposes** (e.g. authorized investigations, research). Do not use for stalking or harassment.
+- HIBP is used only for breach presence (has this email been in a breach?) with API key and ToS compliance; no raw breach data.
 
 ### Streamlit Configuration
 
@@ -828,9 +902,9 @@ Typical performance metrics (varies by query and network):
 
 ### Planned Features
 
-- [ ] API server mode (RESTful API)
-- [ ] Database integration for result storage
-- [ ] Threat intelligence platform integration (MISP, OpenCTI)
+- [x] API server mode (RESTful API)
+- [x] Database integration for result storage (SQLite)
+- [x] Threat intelligence platform integration (STIX, MISP export)
 - [ ] Advanced analytics and visualization
 - [ ] Query templates and saved searches
 - [ ] Batch processing mode

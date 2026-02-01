@@ -5,6 +5,7 @@ Includes logging, validation, retry mechanisms, and IOC extraction.
 import logging
 import re
 import json
+import uuid
 from typing import Dict, List, Optional, Set, Any
 from functools import wraps
 from time import sleep
@@ -259,8 +260,84 @@ def format_iocs_for_export(iocs: Dict[str, Set[str]], format: str = "json") -> s
                 lines.append(f"  - {value}")
         return "\n".join(lines)
     
+    elif format.lower() == "stix":
+        return _format_iocs_stix(iocs)
+    
+    elif format.lower() == "misp":
+        return _format_iocs_misp(iocs)
+    
     else:
         return json.dumps({k: list(v) for k, v in iocs.items()}, indent=2)
+
+
+# Map Robin IOC types to STIX 2.x observable types
+_STIX_TYPE_MAP = {
+    "ipv4": "ipv4-addr",
+    "ipv6": "ipv6-addr",
+    "domain": "domain-name",
+    "onion": "domain-name",
+    "email": "email-addr",
+    "url": "url",
+    "md5": "file",
+    "sha1": "file",
+    "sha256": "file",
+}
+
+
+def _format_iocs_stix(iocs: Dict[str, Set[str]]) -> str:
+    """Format IOCs as STIX 2.x bundle."""
+    objects_list: List[Dict] = []
+    for ioc_type, values in iocs.items():
+        stix_type = _STIX_TYPE_MAP.get(ioc_type)
+        if not stix_type:
+            stix_type = "x-observable-custom"
+        for v in values:
+            oid = f"{stix_type.replace('-', '')}--{uuid.uuid4()}"
+            obj = {"type": stix_type, "id": oid, "spec_version": "2.1"}
+            if stix_type in ("ipv4-addr", "ipv6-addr", "domain-name", "url", "email-addr"):
+                obj["value"] = v
+            elif stix_type == "file":
+                hash_map = {"md5": "MD5", "sha1": "SHA-1", "sha256": "SHA-256"}
+                hash_key = hash_map.get(ioc_type, ioc_type.upper())
+                obj["hashes"] = {hash_key: v}
+            else:
+                obj["value"] = v
+            objects_list.append(obj)
+    bundle = {"type": "bundle", "id": f"bundle--{uuid.uuid4()}", "objects": objects_list}
+    return json.dumps(bundle, indent=2)
+
+
+# Map Robin IOC types to MISP attribute types
+_MISP_TYPE_MAP = {
+    "ipv4": "ip-dst",
+    "ipv6": "ip-dst",
+    "domain": "domain",
+    "onion": "domain",
+    "email": "email-src",
+    "url": "url",
+    "md5": "md5",
+    "sha1": "sha1",
+    "sha256": "sha256",
+    "bitcoin": "btc",
+    "ethereum": "eth",
+    "phone": "phone-number",
+}
+
+
+def _format_iocs_misp(iocs: Dict[str, Set[str]]) -> str:
+    """Format IOCs as MISP-compatible JSON (Event with Attributes)."""
+    attributes = []
+    for ioc_type, values in iocs.items():
+        misp_type = _MISP_TYPE_MAP.get(ioc_type, "comment")
+        for v in values:
+            attributes.append({"type": misp_type, "value": str(v), "to_ids": True})
+    event = {
+        "Event": {
+            "info": "Robin OSINT Export",
+            "Attribute": attributes,
+        }
+    }
+    return json.dumps(event, indent=2)
 
 
 def merge_iocs(*ioc_dicts: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
@@ -325,4 +402,140 @@ def log_tor_metrics(port: int, metrics: Dict[str, any]):
         f"[TOR] Port {port} metrics: {requests} requests, "
         f"{successes} successes, {failures} failures ({success_rate:.1f}% success rate)"
     )
+
+
+def _markdown_to_reportlab_flowables(text: str) -> list:
+    """Convert markdown-like text to ReportLab flowables."""
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, Spacer, Preformatted, ListFlowable, ListItem
+    from reportlab.lib.enums import TA_LEFT
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="Code", fontName="Courier", fontSize=9, leftIndent=20, rightIndent=20, backColor="#f4f4f4", spaceAfter=6))
+    flowables = []
+    in_list = False
+    list_items = []
+
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if not stripped:
+            if list_items:
+                flowables.append(ListFlowable(list_items))
+                list_items = []
+                in_list = False
+            flowables.append(Spacer(1, 6))
+            continue
+
+        if stripped.startswith("### "):
+            if list_items:
+                flowables.append(ListFlowable(list_items))
+                list_items = []
+            flowables.append(Paragraph(stripped[4:].replace("&", "&amp;").replace("<", "&lt;"), styles["Heading3"]))
+            flowables.append(Spacer(1, 4))
+        elif stripped.startswith("## "):
+            if list_items:
+                flowables.append(ListFlowable(list_items))
+                list_items = []
+            flowables.append(Paragraph(stripped[3:].replace("&", "&amp;").replace("<", "&lt;"), styles["Heading2"]))
+            flowables.append(Spacer(1, 6))
+        elif stripped.startswith("# "):
+            if list_items:
+                flowables.append(ListFlowable(list_items))
+                list_items = []
+            flowables.append(Paragraph(stripped[2:].replace("&", "&amp;").replace("<", "&lt;"), styles["Heading1"]))
+            flowables.append(Spacer(1, 8))
+        elif stripped.startswith("- ") or stripped.startswith("* ") or re.match(r"^\d+\.\s", stripped):
+            item_text = re.sub(r"^\d+\.\s", "", stripped) if re.match(r"^\d+\.\s", stripped) else stripped[2:]
+            item_text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", item_text.replace("&", "&amp;").replace("<", "&lt;"))
+            list_items.append(ListItem(Paragraph(item_text, styles["Normal"])))
+            in_list = True
+        elif stripped.startswith("  - ") or stripped.startswith("  * ") or (in_list and re.match(r"^\s{2,}", stripped)):
+            item_text = re.sub(r"^\s*[-*]\s*", "", stripped).replace("&", "&amp;").replace("<", "&lt;")
+            list_items.append(ListItem(Paragraph(item_text, styles["Normal"])))
+        else:
+            if list_items:
+                flowables.append(ListFlowable(list_items))
+                list_items = []
+                in_list = False
+            line_clean = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", stripped.replace("&", "&amp;").replace("<", "&lt;"))
+            flowables.append(Paragraph(line_clean, styles["Normal"]))
+            flowables.append(Spacer(1, 2))
+
+    if list_items:
+        flowables.append(ListFlowable(list_items))
+    return flowables
+
+
+def generate_pdf_report(
+    markdown_content: str,
+    output_path: str,
+    iocs: Optional[Dict[str, Set[str]]] = None,
+) -> bool:
+    """
+    Generate a PDF report from markdown content and optional IOCs.
+    Uses ReportLab (pure Python, no system deps like cairo).
+    
+    Args:
+        markdown_content: Markdown-formatted summary/report text.
+        output_path: Path for the output PDF file.
+        iocs: Optional IOC dictionary to append to the report.
+        
+    Returns:
+        True if PDF was generated successfully, False otherwise.
+    """
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate
+    except ImportError as e:
+        logger.error(f"PDF generation requires reportlab: {e}")
+        return False
+
+    full_content = markdown_content
+    if iocs:
+        full_content += "\n\n## Extracted Indicators of Compromise (IOCs)\n\n"
+        full_content += format_iocs_for_export(iocs, format="text")
+
+    try:
+        doc = SimpleDocTemplate(output_path, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+        flowables = _markdown_to_reportlab_flowables(full_content)
+        doc.build(flowables)
+        logger.info(f"PDF report saved to {output_path}")
+        return True
+    except Exception as e:
+        logger.error(f"PDF generation error: {e}", exc_info=True)
+        return False
+
+
+def generate_pdf_bytes(
+    markdown_content: str,
+    iocs: Optional[Dict[str, Set[str]]] = None,
+) -> Optional[bytes]:
+    """
+    Generate PDF as bytes from markdown content and optional IOCs.
+    Used for in-memory export (e.g., Streamlit download).
+    
+    Returns:
+        PDF bytes if successful, None otherwise.
+    """
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate
+        from io import BytesIO
+    except ImportError:
+        return None
+
+    full_content = markdown_content
+    if iocs:
+        full_content += "\n\n## Extracted Indicators of Compromise (IOCs)\n\n"
+        full_content += format_iocs_for_export(iocs, format="text")
+
+    try:
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+        flowables = _markdown_to_reportlab_flowables(full_content)
+        doc.build(flowables)
+        return buffer.getvalue()
+    except Exception:
+        return None
 

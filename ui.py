@@ -6,14 +6,17 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set
 from scrape import scrape_multiple
 from search import get_search_results
-from telegram_osint import get_telegram_results, is_telegram_configured
+from telegram_osint import is_telegram_configured
 from llm_utils import BufferedStreamingHandler
 from llm import get_llm, refine_query, filter_results, generate_summary
+from people_utils import validate_person_input, normalize_person_input
+from people_osint import run_people_investigation
 from utils import (
     extract_iocs,
     format_iocs_for_export,
     merge_iocs,
-    validate_query
+    validate_query,
+    generate_pdf_bytes,
 )
 from tor_controller import init_tor_controller, TorController
 from tor_pool import get_tor_pool
@@ -40,6 +43,10 @@ if "statistics" not in st.session_state:
     }
 if "tor_controller" not in st.session_state:
     st.session_state.tor_controller = None
+if "search_mode" not in st.session_state:
+    st.session_state.search_mode = "Topic Search"
+if "people_results" not in st.session_state:
+    st.session_state.people_results = None  # dict with profile, summary, iocs, etc. when set
 
 # Streamlit page configuration
 st.set_page_config(
@@ -184,12 +191,13 @@ with st.sidebar.expander("⚙️ Settings", expanded=True):
         st.caption("Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_ENABLED=true to enable.")
     export_format = st.selectbox(
         "Export Format",
-        ["Markdown", "JSON", "CSV", "All"],
+        ["Markdown", "JSON", "CSV", "PDF", "All"],
         key="export_format"
     )
 
 # Advanced Settings
 with st.sidebar.expander("🔧 Advanced Settings"):
+    skip_health_check = st.checkbox("Skip Search Engine Health Check", value=False, key="skip_health_check")
     tor_rotate = st.checkbox("Enable Circuit Rotation", value=False, key="tor_rotate")
     tor_rotate_interval = st.number_input(
         "Rotation Interval (requests)",
@@ -277,25 +285,50 @@ col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     st.image(".github/assets/robin_logo.png", width=200)
 
-# Query Input
+# Mode: Topic Search vs People Search
+st.session_state.search_mode = st.radio(
+    "Mode",
+    ["Topic Search", "People Search"],
+    horizontal=True,
+    key="search_mode_radio",
+    help="Topic Search: free-text dark web query. People Search: person-centric OSINT (name, email, username, phone).",
+)
+if st.session_state.search_mode == "People Search":
+    st.caption("People search must be used only for lawful purposes (e.g. authorized investigations, research). Do not use for stalking or harassment.")
+
+# Query Input (Topic Search) or People Input (People Search)
 query_to_process = None
 if "query_to_run" in st.session_state:
     query_to_process = st.session_state.query_to_run
     del st.session_state.query_to_run
 
-with st.form("search_form", clear_on_submit=False):
-    col_input, col_button = st.columns([10, 1])
-    query = col_input.text_input(
-        "Enter Dark Web Search Query",
-        placeholder="e.g., ransomware payments, data breaches, zero-day exploits",
-        label_visibility="collapsed",
-        value=query_to_process if query_to_process else "",
-        key="query_input",
-    )
-    run_button = col_button.form_submit_button("🔍 Run", use_container_width=True)
+if st.session_state.search_mode == "Topic Search":
+    people_run = False
+    p_name = p_email = p_username = p_phone = ""
+    with st.form("search_form", clear_on_submit=False):
+        col_input, col_button = st.columns([10, 1])
+        query = col_input.text_input(
+            "Enter Dark Web Search Query",
+            placeholder="e.g., ransomware payments, data breaches, zero-day exploits",
+            label_visibility="collapsed",
+            value=query_to_process if query_to_process else "",
+            key="query_input",
+        )
+        run_button = col_button.form_submit_button("🔍 Run", use_container_width=True)
+else:
+    # People Search form
+    with st.form("people_form", clear_on_submit=False):
+        st.subheader("Person identifiers (at least one required)")
+        p_name = st.text_input("Name", placeholder="Full name or alias", key="people_name")
+        p_email = st.text_input("Email", placeholder="email@example.com (comma-separated for multiple)", key="people_email")
+        p_username = st.text_input("Username", placeholder="e.g. johndoe (comma-separated for multiple)", key="people_username")
+        p_phone = st.text_input("Phone", placeholder="+1 555 123 4567", key="people_phone")
+        people_run = st.form_submit_button("🔍 Run People Search")
+    query = None
+    run_button = False
 
-# Process the query
-if (run_button and query) or query_to_process:
+# Process the query (Topic Search)
+if st.session_state.search_mode == "Topic Search" and ((run_button and query) or query_to_process):
     start_time = time.time()
     
     # Validate query
@@ -337,30 +370,17 @@ if (run_button and query) or query_to_process:
             st.metric("Refined Query", st.session_state.refined[:30] + "..." if len(st.session_state.refined) > 30 else st.session_state.refined)
         
         # Stage 3 - Search dark web (+ optional Telegram) (40%)
-        telegram_count = 0
         with status_container:
             with st.status("🔍 Searching dark web..." + (" + Telegram" if include_telegram else ""), expanded=False) as status:
                 update_progress(progress_bar, progress_text, 0.4, "Searching Dark Web" + (" + Telegram" if include_telegram else ""))
                 try:
                     st.session_state.results = get_search_results(
-                        st.session_state.refined.replace(" ", "+"), 
-                        max_workers=threads
+                        st.session_state.refined.replace(" ", "+"),
+                        max_workers=threads,
+                        include_telegram=include_telegram,
+                        skip_health_check=skip_health_check,
                     )
-                    if include_telegram and is_telegram_configured():
-                        tg_results = get_telegram_results(st.session_state.refined, limit=50)
-                        if tg_results:
-                            seen_links = {r.get("link") for r in st.session_state.results if r.get("link")}
-                            for r in tg_results:
-                                link = r.get("link")
-                                if link and link not in seen_links:
-                                    seen_links.add(link)
-                                    st.session_state.results.append(r)
-                                    telegram_count += 1
-                            status.update(label=f"✅ Found {len(st.session_state.results)} results (Telegram: {telegram_count})", state="complete")
-                        else:
-                            status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
-                    else:
-                        status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
+                    status.update(label=f"✅ Found {len(st.session_state.results)} results", state="complete")
                     if not st.session_state.results:
                         st.warning("⚠️ No results found. Try refining your query.")
                 except Exception as e:
@@ -369,6 +389,10 @@ if (run_button and query) or query_to_process:
         
         with cols[1]:
             st.metric("Search Results", len(st.session_state.results))
+            telegram_count = sum(
+                1 for r in (st.session_state.results or [])
+                if r.get("link") and ("t.me" in r["link"] or "telegram://" in r["link"])
+            )
             if include_telegram and telegram_count:
                 st.caption(f"Telegram: {telegram_count}")
         
@@ -403,8 +427,10 @@ if (run_button and query) or query_to_process:
                     update_progress(progress_bar, progress_text, 0.8, "Scraping Content")
                     try:
                         st.session_state.scraped = scrape_multiple(
-                            st.session_state.filtered, 
-                            max_workers=threads
+                            st.session_state.filtered,
+                            max_workers=threads,
+                            rotate=tor_rotate,
+                            rotate_interval=int(tor_rotate_interval) if tor_rotate else None,
                         )
                         if not st.session_state.scraped:
                             st.warning("⚠️ Failed to scrape any content.")
@@ -499,30 +525,46 @@ if (run_button and query) or query_to_process:
             
             # Export IOCs
             st.subheader("Export IOCs")
-            ioc_col1, ioc_col2, ioc_col3 = st.columns(3)
-            with ioc_col1:
+            ioc_cols = st.columns(5)
+            with ioc_cols[0]:
                 ioc_json = format_iocs_for_export(st.session_state.all_iocs, format="json")
                 st.download_button(
-                    "Download IOCs (JSON)",
+                    "IOCs (JSON)",
                     ioc_json,
                     file_name=f"iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json"
                 )
-            with ioc_col2:
+            with ioc_cols[1]:
                 ioc_csv = format_iocs_for_export(st.session_state.all_iocs, format="csv")
                 st.download_button(
-                    "Download IOCs (CSV)",
+                    "IOCs (CSV)",
                     ioc_csv,
                     file_name=f"iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
-            with ioc_col3:
+            with ioc_cols[2]:
                 ioc_text = format_iocs_for_export(st.session_state.all_iocs, format="text")
                 st.download_button(
-                    "Download IOCs (Text)",
+                    "IOCs (Text)",
                     ioc_text,
                     file_name=f"iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                     mime="text/plain"
+                )
+            with ioc_cols[3]:
+                ioc_stix = format_iocs_for_export(st.session_state.all_iocs, format="stix")
+                st.download_button(
+                    "IOCs (STIX)",
+                    ioc_stix,
+                    file_name=f"iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.stix.json",
+                    mime="application/json"
+                )
+            with ioc_cols[4]:
+                ioc_misp = format_iocs_for_export(st.session_state.all_iocs, format="misp")
+                st.download_button(
+                    "IOCs (MISP)",
+                    ioc_misp,
+                    file_name=f"iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.misp.json",
+                    mime="application/json"
                 )
         
         # Result Preview
@@ -541,7 +583,7 @@ if (run_button and query) or query_to_process:
         # Export Options
         st.divider()
         st.subheader("📥 Export Options")
-        export_cols = st.columns(4)
+        export_cols = st.columns(5)
         
         # Markdown export
         if export_format in ["Markdown", "All"]:
@@ -598,8 +640,25 @@ if (run_button and query) or query_to_process:
                     mime="text/csv"
                 )
         
+        # PDF export
+        if export_format in ["PDF", "All"]:
+            with export_cols[3]:
+                pdf_bytes = generate_pdf_bytes(
+                    st.session_state.streamed_summary,
+                    st.session_state.all_iocs if extract_iocs_flag else None,
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        "📕 Download PDF",
+                        pdf_bytes,
+                        file_name=f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.caption("PDF requires reportlab package")
+        
         # Save query option
-        with export_cols[3]:
+        with export_cols[4]:
             query_name = st.text_input("Save query as:", key="save_query_name", placeholder="Query name")
             if st.button("💾 Save Query") and query_name:
                 st.session_state.saved_queries[query_name] = query
@@ -623,6 +682,111 @@ if (run_button and query) or query_to_process:
         progress_bar.empty()
         progress_text.empty()
         raise
+
+# Process People Search
+elif st.session_state.search_mode == "People Search" and people_run:
+    start_time = time.time()
+    is_valid, err = validate_person_input(name=p_name, email=p_email, username=p_username, phone=p_phone)
+    if not is_valid:
+        st.error(f"❌ {err}")
+        st.stop()
+    person_input = normalize_person_input(name=p_name, email=p_email, username=p_username, phone=p_phone)
+    add_to_history(f"People: {person_input.get('name') or (person_input.get('emails') or [''])[0] or (person_input.get('usernames') or [''])[0] or 'unknown'}")
+    st.session_state.people_results = None
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+    try:
+        with st.status("🔄 Loading LLM...", expanded=False):
+            llm = get_llm(model)
+        update_progress(progress_bar, progress_text, 0.2, "Expanding queries")
+        with st.status("🔍 People investigation (dark + clear web + optional APIs)...", expanded=False) as status:
+            person_input, profile, search_res, scraped, summary, all_iocs = run_people_investigation(
+                llm,
+                person_input,
+                threads=threads,
+                extract_iocs_flag=extract_iocs_flag,
+                include_telegram=include_telegram,
+                include_clear_web=True,
+                skip_health_check=skip_health_check,
+                rotate_circuit=tor_rotate,
+                rotate_interval=int(tor_rotate_interval) if tor_rotate else None,
+            )
+            status.update(label=f"✅ Done: {len(search_res)} results, {len(scraped)} scraped", state="complete")
+        query_time = time.time() - start_time
+        update_progress(progress_bar, progress_text, 1.0, "Complete")
+        st.session_state.people_results = {
+            "person_input": person_input,
+            "profile": profile,
+            "search_results": search_res,
+            "scraped": scraped,
+            "summary": summary,
+            "all_iocs": all_iocs,
+            "query_time": query_time,
+        }
+        update_statistics(query_time, sum(len(v) for v in all_iocs.values()), len(search_res))
+        # Display Person Profile
+        st.subheader(":red[Person Profile]", anchor=None, divider="gray")
+        pr = profile
+        if pr.get("name"):
+            st.write(f"**Name:** {pr['name']}")
+        if pr.get("emails"):
+            st.write(f"**Emails:** {', '.join(pr['emails'])}")
+        if pr.get("usernames"):
+            st.write(f"**Usernames:** {', '.join(pr['usernames'])}")
+        if pr.get("phones"):
+            st.write(f"**Phones:** {', '.join(pr['phones'])}")
+        if pr.get("social_links"):
+            st.write(f"**Social links:** {', '.join(pr['social_links'][:15])}")
+        if pr.get("api_snippets"):
+            st.write("**API snippets:**")
+            for s in pr["api_snippets"][:15]:
+                st.caption(f"• {s}")
+        st.write(f"**Mentions (URLs):** {len(pr.get('dark_web_mentions') or [])} URL(s)")
+        # Investigation Summary
+        st.divider()
+        st.subheader(":red[Investigation Summary]", anchor=None, divider="gray")
+        st.markdown(summary)
+        # IOCs
+        if extract_iocs_flag and all_iocs:
+            st.divider()
+            st.subheader("🔍 IOCs Linked to This Person")
+            ioc_cols = st.columns(min(len(all_iocs), 5))
+            for idx, (ioc_type, values) in enumerate(list(all_iocs.items())[:5]):
+                with ioc_cols[idx]:
+                    st.metric(ioc_type.upper(), len(values))
+            ioc_tabs = st.tabs(list(all_iocs.keys())[:10])
+            for tab, (ioc_type, values) in zip(ioc_tabs, list(all_iocs.items())[:10]):
+                with tab:
+                    for value in sorted(values):
+                        st.code(value, language=None)
+            st.download_button("Download IOCs (JSON)", json.dumps({k: list(v) for k, v in all_iocs.items()}, indent=2), file_name=f"people_iocs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", mime="application/json", key="people_ioc_dl")
+        # Export
+        st.divider()
+        st.subheader("📥 Export")
+        profile_md = "## Person Profile\n"
+        if pr.get("name"):
+            profile_md += f"- **Name:** {pr['name']}\n"
+        if pr.get("emails"):
+            profile_md += f"- **Emails:** {', '.join(pr['emails'])}\n"
+        if pr.get("usernames"):
+            profile_md += f"- **Usernames:** {', '.join(pr['usernames'])}\n"
+        if pr.get("social_links"):
+            profile_md += f"- **Social links:** {', '.join(pr['social_links'][:20])}\n"
+        full_md = f"# People Investigation Report\n\n{profile_md}\n\n## Investigation Summary\n\n{summary}"
+        if extract_iocs_flag and all_iocs:
+            full_md += "\n\n## IOCs\n\n" + format_iocs_for_export(all_iocs, format="text")
+        st.download_button("Download Markdown", full_md, file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md", mime="text/markdown", key="people_md_dl")
+        st.download_button("Download JSON", json.dumps({"person_input": person_input, "person_profile": {k: (list(v) if isinstance(v, (list, set)) else v) for k, v in pr.items()}, "summary": summary, "source_urls": list(scraped.keys()), "iocs": {k: list(v) for k, v in all_iocs.items()} if all_iocs else {}}, indent=2, ensure_ascii=False), file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", mime="application/json", key="people_json_dl")
+        pdf_bytes = generate_pdf_bytes(full_md, all_iocs if extract_iocs_flag else None)
+        if pdf_bytes:
+            st.download_button("Download PDF", pdf_bytes, file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf", mime="application/pdf", key="people_pdf_dl")
+        progress_bar.empty()
+        progress_text.empty()
+        st.success(f"✅ People investigation complete! Processed in {query_time:.1f} seconds")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+        progress_bar.empty()
+        progress_text.empty()
 
 # Footer
 st.divider()

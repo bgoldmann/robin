@@ -1,3 +1,4 @@
+import json
 import re
 import openai
 from langchain_core.prompts import ChatPromptTemplate
@@ -5,7 +6,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.exceptions import LangChainException
 from llm_utils import _llm_config_map, _common_llm_params
 from config import OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from utils import logger, retry_with_backoff
 
 import warnings
@@ -249,4 +250,150 @@ def generate_summary(llm, query: str, content: Dict[str, str]) -> str:
         raise
     except Exception as e:
         logger.error(f"Unexpected error generating summary: {e}")
+        raise
+
+
+def _expand_person_queries_rule_based(person_input: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Rule-based fallback for person query expansion."""
+    name = person_input.get("name") or ""
+    emails = person_input.get("emails") or []
+    usernames = person_input.get("usernames") or []
+    phones = person_input.get("phones") or []
+    queries = []
+    if name:
+        queries.append(f'"{name}"')
+    for e in emails:
+        queries.append(f'"{e}"')
+    for u in usernames:
+        queries.append(f'"{u}"')
+    for p in phones:
+        queries.append(f'"{p}"')
+    if not queries:
+        queries = ["person search"]
+    # Same queries used for dark web and clear web; usernames list for username checks
+    return {
+        "dark_web": queries[:5],
+        "clear_web": queries[:5],
+        "username": list(usernames)[:10],
+    }
+
+
+@retry_with_backoff(max_retries=2, backoff_factor=1.0, exceptions=(Exception,))
+def expand_person_queries(llm, person_input: Dict[str, Any]) -> Dict[str, List[str]]:
+    """
+    Expand person identifiers into search queries for dark web, clear web, and username lookup.
+    Returns dict with keys: dark_web, clear_web, username (lists of query strings).
+    """
+    name = person_input.get("name") or ""
+    emails = person_input.get("emails") or []
+    usernames = person_input.get("usernames") or []
+    phones = person_input.get("phones") or []
+    parts = []
+    if name:
+        parts.append(f"Name: {name}")
+    if emails:
+        parts.append(f"Emails: {', '.join(emails[:5])}")
+    if usernames:
+        parts.append(f"Usernames: {', '.join(usernames[:5])}")
+    if phones:
+        parts.append(f"Phones: {', '.join(phones[:5])}")
+    if not parts:
+        return _expand_person_queries_rule_based(person_input)
+
+    system_prompt = """You are an OSINT analyst. Given person identifiers, output search queries for:
+1. Dark web / Telegram: 3-5 short queries (no operators) to find mentions of this person on dark web.
+2. Clear web: 3-5 short queries for general web search (name, email, username, phone).
+3. Username: list the usernames exactly as given (one per line) for username-availability/lookup checks.
+
+Output ONLY valid JSON with exactly these keys (each value is a list of strings):
+{"dark_web": ["query1", "query2"], "clear_web": ["query1", "query2"], "username": ["u1", "u2"]}
+No other text. No markdown."""
+    try:
+        prompt_template = ChatPromptTemplate(
+            [("system", system_prompt), ("user", "Person identifiers:\n{identifiers}")]
+        )
+        chain = prompt_template | llm | StrOutputParser()
+        raw = chain.invoke({"identifiers": "\n".join(parts)})
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```\w*\n?", "", raw)
+            raw = re.sub(r"\n?```\s*$", "", raw)
+        out = json.loads(raw)
+        dark = out.get("dark_web") or []
+        clear = out.get("clear_web") or []
+        username = out.get("username") or []
+        if not dark and not clear:
+            return _expand_person_queries_rule_based(person_input)
+        return {
+            "dark_web": list(dark)[:5] if isinstance(dark, list) else [],
+            "clear_web": list(clear)[:5] if isinstance(clear, list) else [],
+            "username": list(username)[:10] if isinstance(username, list) else list(usernames)[:10],
+        }
+    except Exception as e:
+        logger.warning(f"LLM expand_person_queries failed: {e}. Using rule-based expansion.")
+        return _expand_person_queries_rule_based(person_input)
+
+
+@retry_with_backoff(max_retries=2, backoff_factor=2.0, exceptions=(Exception,))
+def generate_people_summary(
+    llm,
+    person_input: Dict[str, Any],
+    content: Dict[str, str],
+    profile: Dict[str, Any],
+) -> str:
+    """
+    Generate people-focused investigation summary from scraped content and profile.
+    """
+    if not content and not profile.get("api_snippets"):
+        return (
+            "# People Investigation Summary\n\n**Subject:** "
+            + (person_input.get("name") or ", ".join(person_input.get("emails") or []) or "Unknown")
+            + "\n\n**Status:** No content or profile data found to analyze."
+        )
+
+    content_str = "\n\n".join(
+        [f"URL: {url}\nContent: {text[:2000]}" for url, text in list(content.items())[:20]]
+    ) if content else "No scraped content."
+    profile_str = []
+    if profile.get("name"):
+        profile_str.append(f"Name: {profile['name']}")
+    if profile.get("emails"):
+        profile_str.append(f"Emails: {', '.join(profile['emails'][:10])}")
+    if profile.get("usernames"):
+        profile_str.append(f"Usernames: {', '.join(profile['usernames'][:10])}")
+    if profile.get("social_links"):
+        profile_str.append(f"Social links: {', '.join(profile['social_links'][:15])}")
+    if profile.get("api_snippets"):
+        profile_str.append("API snippets:\n" + "\n".join(profile["api_snippets"][:20]))
+    profile_block = "\n".join(profile_str) if profile_str else "No structured profile data."
+
+    system_prompt = """You are an OSINT analyst generating a people-focused investigation report.
+
+Rules:
+1. Analyze the scraped content and profile data to summarize what is known about this person.
+2. Mention where they appear (dark web, clear web, social) and any associated IOCs (emails, phones, crypto, etc.).
+3. Note credibility and consistency of information across sources.
+4. Provide 3-5 key findings and suggested next steps.
+5. Be objective; do not speculate beyond the evidence.
+6. Format with clear section headings: Subject, Summary, Where They Appear, Key Findings, Next Steps.
+
+Output Format:
+- Subject: name/identifiers
+- Summary: short paragraph
+- Where They Appear: sources and URLs referenced
+- Key Findings: bullet list
+- Next Steps: suggested follow-up searches or checks
+
+INPUT:
+"""
+    try:
+        prompt_template = ChatPromptTemplate(
+            [("system", system_prompt), ("user", "Profile and identifiers:\n{profile}\n\nScraped content:\n{content}")]
+        )
+        chain = prompt_template | llm | StrOutputParser()
+        summary = chain.invoke({"profile": profile_block, "content": content_str})
+        logger.info("People summary generated successfully")
+        return summary
+    except Exception as e:
+        logger.error(f"Error generating people summary: {e}")
         raise

@@ -208,7 +208,13 @@ def scrape_single(
     
     return url, scraped_text
 
-def scrape_multiple(urls_data: List[Dict[str, str]], max_workers: int = 5, max_chars: int = 1200) -> Dict[str, str]:
+def scrape_multiple(
+    urls_data: List[Dict[str, str]],
+    max_workers: int = 5,
+    max_chars: int = 1200,
+    rotate: bool = False,
+    rotate_interval: Optional[int] = None,
+) -> Dict[str, str]:
     """
     Scrapes multiple URLs concurrently using a thread pool.
     
@@ -216,6 +222,8 @@ def scrape_multiple(urls_data: List[Dict[str, str]], max_workers: int = 5, max_c
         urls_data: List of dictionaries with 'link' and 'title' keys
         max_workers: Number of concurrent threads for scraping
         max_chars: Maximum characters to keep from each scraped page
+        rotate: Whether to rotate Tor circuit periodically
+        rotate_interval: Interval for circuit rotation (uses config default if None)
         
     Returns:
         Dictionary mapping each URL to its scraped content
@@ -229,7 +237,7 @@ def scrape_multiple(urls_data: List[Dict[str, str]], max_workers: int = 5, max_c
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_url = {
-            executor.submit(scrape_single, url_data): url_data
+            executor.submit(scrape_single, url_data, rotate, rotate_interval): url_data
             for url_data in urls_data
         }
         

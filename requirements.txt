@@ -12,3 +12,8 @@ langchain_google_genai
 urllib3>=1.26.0
 stem
 telethon
+duckduckgo-search
+reportlab
+fastapi
+uvicorn[standard]
+slowapi
