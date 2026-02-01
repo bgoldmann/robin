@@ -438,21 +438,23 @@ def get_search_results(
         
         for future in as_completed(future_to_task):
             engine_id, engine_config = future_to_task[future]
+            # Ensure stats dict has request keys (health check may have set only "checks"/"healthy")
+            if engine_id not in _engine_stats:
+                _engine_stats[engine_id] = {"requests": 0, "successes": 0, "results": 0}
+            st = _engine_stats[engine_id]
+            for k in ("requests", "successes", "results"):
+                st.setdefault(k, 0)
             try:
                 result_urls = future.result()
                 if result_urls is None:
                     result_urls = []
                 results.extend(result_urls)
-                if engine_id not in _engine_stats:
-                    _engine_stats[engine_id] = {"requests": 0, "successes": 0, "results": 0}
-                _engine_stats[engine_id]["requests"] += 1
-                _engine_stats[engine_id]["successes"] += 1
-                _engine_stats[engine_id]["results"] += len(result_urls)
+                st["requests"] = st.get("requests", 0) + 1
+                st["successes"] = st.get("successes", 0) + 1
+                st["results"] = st.get("results", 0) + len(result_urls)
             except Exception as e:
                 logger.error(f"Error getting results from {engine_config.get('name', engine_id)}: {e}")
-                if engine_id not in _engine_stats:
-                    _engine_stats[engine_id] = {"requests": 0, "successes": 0, "results": 0}
-                _engine_stats[engine_id]["requests"] += 1
+                st["requests"] = st.get("requests", 0) + 1
 
     # Deduplicate results based on the link
     seen_links: set = set()

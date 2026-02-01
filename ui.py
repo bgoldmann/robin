@@ -776,7 +776,13 @@ elif st.session_state.search_mode == "People Search" and people_run:
         if extract_iocs_flag and all_iocs:
             full_md += "\n\n## IOCs\n\n" + format_iocs_for_export(all_iocs, format="text")
         st.download_button("Download Markdown", full_md, file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md", mime="text/markdown", key="people_md_dl")
-        st.download_button("Download JSON", json.dumps({"person_input": person_input, "person_profile": {k: (list(v) if isinstance(v, (list, set)) else v) for k, v in pr.items()}, "summary": summary, "source_urls": list(scraped.keys()), "iocs": {k: list(v) for k, v in all_iocs.items()} if all_iocs else {}}, indent=2, ensure_ascii=False), file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", mime="application/json", key="people_json_dl")
+        def _ser_prof(v):
+            if isinstance(v, (list, set)):
+                return list(v)
+            if isinstance(v, dict) and v and isinstance(next(iter(v.values()), None), (set, list)):
+                return {kk: list(vv) if isinstance(vv, (list, set)) else vv for kk, vv in v.items()}
+            return v
+        st.download_button("Download JSON", json.dumps({"person_input": person_input, "person_profile": {k: _ser_prof(v) for k, v in pr.items()}, "summary": summary, "source_urls": list(scraped.keys()), "iocs": {k: list(v) for k, v in all_iocs.items()} if all_iocs else {}}, indent=2, ensure_ascii=False), file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", mime="application/json", key="people_json_dl")
         pdf_bytes = generate_pdf_bytes(full_md, all_iocs if extract_iocs_flag else None)
         if pdf_bytes:
             st.download_button("Download PDF", pdf_bytes, file_name=f"people_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf", mime="application/pdf", key="people_pdf_dl")

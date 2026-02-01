@@ -306,7 +306,7 @@ def expand_person_queries(llm, person_input: Dict[str, Any]) -> Dict[str, List[s
 3. Username: list the usernames exactly as given (one per line) for username-availability/lookup checks.
 
 Output ONLY valid JSON with exactly these keys (each value is a list of strings):
-{"dark_web": ["query1", "query2"], "clear_web": ["query1", "query2"], "username": ["u1", "u2"]}
+{{"dark_web": ["query1", "query2"], "clear_web": ["query1", "query2"], "username": ["u1", "u2"]}}
 No other text. No markdown."""
     try:
         prompt_template = ChatPromptTemplate(

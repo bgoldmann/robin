@@ -524,9 +524,15 @@ def people_cmd(name, email, username, phone, model, threads, output, format, ext
         click.echo(f"\n[OUTPUT] Markdown: {fn}")
     if format.lower() in ["json", "both", "all"]:
         fn = f"{base_filename}.json"
+        def _serialize_profile_value(v):
+            if isinstance(v, (list, set)):
+                return list(v)
+            if isinstance(v, dict) and v and isinstance(next(iter(v.values()), None), (set, list)):
+                return {kk: list(vv) if isinstance(vv, (list, set)) else vv for kk, vv in v.items()}
+            return v
         out_data = {
             "person_input": person_input,
-            "person_profile": {k: (list(v) if isinstance(v, (list, set)) else v) for k, v in profile.items()},
+            "person_profile": {k: _serialize_profile_value(v) for k, v in profile.items()},
             "summary": summary,
             "source_urls": list(scraped_results.keys()),
             "statistics": {"search_results": len(search_results), "scraped": len(scraped_results)},

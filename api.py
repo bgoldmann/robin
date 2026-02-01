@@ -193,10 +193,12 @@ async def investigate_people(req: Request, request: PeopleInvestigateRequest):
             include_telegram=request.include_telegram,
             skip_health_check=request.skip_health_check,
         )
-        # Serialize profile (lists/sets to list)
+        # Serialize profile (lists/sets to list; iocs dict values to list for JSON)
         def _ser(v):
             if isinstance(v, (list, set)):
                 return list(v)
+            if isinstance(v, dict) and v and isinstance(next(iter(v.values()), None), (set, list)):
+                return {kk: list(vv) if isinstance(vv, (list, set)) else vv for kk, vv in v.items()}
             return v
         person_profile = {k: _ser(v) for k, v in profile.items()}
         return {
